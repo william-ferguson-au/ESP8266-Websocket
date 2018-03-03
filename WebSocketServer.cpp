@@ -1,14 +1,9 @@
 //#define DEBUGGING
-//#define SUPPORT_HIXIE_76
 
 //MS:
 
 #include "global.h"
 #include "WebSocketServer.h"
-
-#ifdef SUPPORT_HIXIE_76
-#include "MD5.c"
-#endif
 
 #include "sha1.h"
 #include "Base64.h"
@@ -50,14 +45,8 @@ bool WebSocketServer::analyzeRequest(int bufferLength) {
     int charpos;
     int bite;
     bool foundupgrade = false;
-#ifdef SUPPORT_HIXIE_76
-    String oldkey[2];
-    unsigned long intkey[2];
-#endif
     String newkey;
 
-    hixie76style = false;
-    
 #ifdef DEBUGGING
     Serial.println(F("Analyzing request headers"));
 #endif
@@ -73,9 +62,6 @@ bool WebSocketServer::analyzeRequest(int bufferLength) {
 
         if ((char)bite == '\n') {
             // Recieved CRNL without content, so header is done
-#ifndef SUPPORT_HIXIE_76
-            if (temp.charAt(0) == '\r') break;
-#endif
 #ifdef DEBUGGING
             Serial.print("Got Line: " + temp);
 #endif
@@ -90,22 +76,11 @@ bool WebSocketServer::analyzeRequest(int bufferLength) {
             if (!foundupgrade && tempLc.startsWith("upgrade:") && temp.indexOf("WebSocket") != -1) {
                 // OK, it's a websockets handshake for sure
                 foundupgrade = true;
-                hixie76style = true;
             } else if (!foundupgrade && tempLc.startsWith("upgrade:") && temp.indexOf("websocket") != -1) {
                 foundupgrade = true;
-                hixie76style = false;
             } else if (tempLc.startsWith("origin:")) {
                 origin = temp.substring(7,temp.length() - 2); // Don't save last CR+LF
             } else
-#ifdef SUPPORT_HIXIE_76
-            if (tempLc.startsWith("host:")) {
-                host = temp.substring(5,temp.length() - 2); // Don't save last CR+LF
-            } else if (tempLcLc.startsWith("sec-websocket-key1:")) {
-                oldkey[0]=tempLc.substring(19,temp.length() - 2); // Don't save last CR+LF
-            } else if (temp.startsWith("sec-websocket-key2:")) {
-                oldkey[1]=tempLc.substring(19,temp.length() - 2); // Don't save last CR+LF
-            } else
-#endif
             if (tempLc.startsWith("sec-websocket-key:")) {
                 newkey=temp.substring(18,temp.length() - 2); // Don't save last CR+LF
             }
@@ -127,68 +102,7 @@ bool WebSocketServer::analyzeRequest(int bufferLength) {
     // send response headers.
     if (foundupgrade == true) {
 
-#ifdef SUPPORT_HIXIE_76
-        if (hixie76style && host.length() > 0 && oldkey[0].length() > 0 && oldkey[1].length() > 0) {
-            // All ok, proceed with challenge and MD5 digest
-            char key3[9] = {0};
-            // What now is in temp should be the third key
-            temp.toCharArray(key3, 9);
-
-            // Process keys
-            for (int i = 0; i <= 1; i++) {
-                unsigned int spaces =0;
-                String numbers;
-                
-                for (int c = 0; c < oldkey[i].length(); c++) {
-                    char ac = oldkey[i].charAt(c);
-                    if (ac >= '0' && ac <= '9') {
-                        numbers += ac;
-                    }
-                    if (ac == ' ') {
-                        spaces++;
-                    }
-                }
-                char numberschar[numbers.length() + 1];
-                numbers.toCharArray(numberschar, numbers.length()+1);
-                intkey[i] = strtoul(numberschar, NULL, 10) / spaces;        
-            }
-            
-            unsigned char challenge[16] = {0};
-            challenge[0] = (unsigned char) ((intkey[0] >> 24) & 0xFF);
-            challenge[1] = (unsigned char) ((intkey[0] >> 16) & 0xFF);
-            challenge[2] = (unsigned char) ((intkey[0] >>  8) & 0xFF);
-            challenge[3] = (unsigned char) ((intkey[0]      ) & 0xFF);    
-            challenge[4] = (unsigned char) ((intkey[1] >> 24) & 0xFF);
-            challenge[5] = (unsigned char) ((intkey[1] >> 16) & 0xFF);
-            challenge[6] = (unsigned char) ((intkey[1] >>  8) & 0xFF);
-            challenge[7] = (unsigned char) ((intkey[1]      ) & 0xFF);
-            
-            memcpy(challenge + 8, key3, 8);
-            
-            unsigned char md5Digest[16];
-            MD5(challenge, md5Digest, 16);
-            
-            socket_client->print(F("HTTP/1.1 101 Web Socket Protocol Handshake\r\n"));
-            socket_client->print(F("Upgrade: WebSocket\r\n"));
-            socket_client->print(F("Connection: Upgrade\r\n"));
-            socket_client->print(F("Sec-WebSocket-Origin: "));        
-            socket_client->print(origin);
-            socket_client->print(CRLF);
-            
-            // The "Host:" value should be used as location
-            socket_client->print(F("Sec-WebSocket-Location: ws://"));
-            socket_client->print(host);
-            socket_client->print(socket_urlPrefix);
-            socket_client->print(CRLF);
-            socket_client->print(CRLF);
-            
-            socket_client->write(md5Digest, 16);
-
-            return true;
-        }
-#endif
-
-        if (!hixie76style && newkey.length() > 0) {
+        if (newkey.length() > 0) {
 
             // add the magic string
             newkey += "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
@@ -233,46 +147,6 @@ bool WebSocketServer::analyzeRequest(int bufferLength) {
         return false;
     }
 }
-
-#ifdef SUPPORT_HIXIE_76
-String WebSocketServer::handleHixie76Stream() {
-    int bite;
-    int frameLength = 0;
-    // String to hold bytes sent by client to server.
-    String socketString;
-
-    if (socket_client->connected() && socket_client->available()) {
-        bite = timedRead();
-
-        if (bite != -1) {
-            if (bite == 0)
-                continue; // Frame start, don't save
-
-            if ((uint8_t) bite == 0xFF) {
-                // Frame end. Process what we got.
-                return socketString;
-                
-            } else {
-                socketString += (char)bite;
-                frameLength++;            
-
-                if (frameLength > MAX_FRAME_LENGTH) {
-                    // Too big to handle!
-#ifdef DEBUGGING
-                    Serial.print("Client send frame exceeding ");
-                    Serial.print(MAX_FRAME_LENGTH);
-                    Serial.println(" bytes");
-#endif
-                    return;
-                }  
-            }           
-        }
-    }
-
-    return socketString;
-}
-
-#endif
 
 String WebSocketServer::handleStream() {
     uint8_t msgtype;
@@ -363,19 +237,10 @@ void WebSocketServer::terminateStream(uint8_t cause) {
     Serial.println(F("Terminating socket"));
 #endif
 
-    if (hixie76style) {
-#ifdef SUPPORT_HIXIE_76
-        // Should send 0xFF00 to server to tell it I'm quitting here.
-        socket_client->write((uint8_t) 0xFF);
-        socket_client->write((uint8_t) 0x00); 
-#endif       
-    } else {
+    // Should send termination sequence (87,88,89) to server to tell it I'm quitting here.
+    socket_client->write((uint8_t) cause);
+    socket_client->write((uint8_t) 0x00);
 
-        // Should send termination sequence (87,88,89) to server to tell it I'm quitting here.
-        socket_client->write((uint8_t) cause);
-        socket_client->write((uint8_t) 0x00);
-    }   
-    
     socket_client->flush();
     delay(10);
     socket_client->stop();
@@ -386,19 +251,10 @@ void WebSocketServer::disconnectStream() {
     Serial.println(F("Disconnecting socket"));
 #endif
 
-    if (hixie76style) {
-#ifdef SUPPORT_HIXIE_76
-        // Should send 0xFF00 to server to tell it I'm quitting here.
-        socket_client->write((uint8_t) 0xFF);
-        socket_client->write((uint8_t) 0x00); 
-#endif       
-    } else {
+    // Should send 0x8800 to server to tell it I'm quitting here.
+    socket_client->write((uint8_t) 0x88);
+    socket_client->write((uint8_t) 0x00);
 
-        // Should send 0x8800 to server to tell it I'm quitting here.
-        socket_client->write((uint8_t) 0x88);
-        socket_client->write((uint8_t) 0x00);
-    }   
-    
     socket_client->flush();
     delay(10);
     socket_client->stop();
@@ -407,13 +263,7 @@ void WebSocketServer::disconnectStream() {
 String WebSocketServer::getData() {
     String data;
 
-    if (hixie76style) {
-#ifdef SUPPORT_HIXIE_76
-        data = handleHixie76Stream();
-#endif
-    } else {
-        data = handleStream();
-    }
+    data = handleStream();
 
     return data;
 }
@@ -424,13 +274,7 @@ void WebSocketServer::sendData(const char *str) {
     Serial.println(str);
 #endif
     if (socket_client->connected()) {
-        if (hixie76style) {
-            socket_client->write(0x00); // Frame start
-            socket_client->print(str);
-            socket_client->write(0xFF); // Frame end            
-        } else {
-            sendEncodedData(str, 0x81);
-        }         
+        sendEncodedData(str, 0x81);
     }
 }
 
@@ -440,13 +284,7 @@ void WebSocketServer::sendData(String str) {
     Serial.println(str);
 #endif
     if (socket_client->connected()) {
-        if (hixie76style) {
-            socket_client->write(0x00); // Frame start
-            socket_client->print(str);
-            socket_client->write(0xFF); // Frame end        
-        } else {
-            sendEncodedData(str, 0x81);
-        }
+        sendEncodedData(str, 0x81);
     }
 }
 
