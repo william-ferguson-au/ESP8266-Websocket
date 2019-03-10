@@ -2,40 +2,37 @@
 
 //MS:
 
+#include <esp_log.h>
 #include "global.h"
 #include "WebSocketClient.h"
 
 #include "sha1.h"
 #include "Base64.h"
 
+static const char* TAG = "WebSocketClient";
 
 bool WebSocketClient::handshake(Client &client) {
 
     socket_client = &client;
 
+    ESP_LOGI(TAG, "Start WebSocket handshake");
+
     // If there is a connected client->
     if (socket_client->connected()) {
         // Check request and look for websocket handshake
-#ifdef DEBUGGING
-            Serial.println(F("Client connected"));
-#endif
-        if (analyzeRequest()) {
-#ifdef DEBUGGING
-                Serial.println(F("Websocket established"));
-#endif
+      ESP_LOGI(TAG, "Client connected");
 
-                return true;
-
-        } else {
-            // Might just need to break until out of socket_client loop.
-#ifdef DEBUGGING
-            Serial.println(F("Invalid handshake"));
-#endif
-            disconnectStream();
-
-            return false;
-        }
+      if (analyzeRequest()) {
+        ESP_LOGI(TAG, "Websocket established");
+        return true;
+      } else {
+        // Might just need to break until out of socket_client loop.
+        ESP_LOGI(TAG, "Invalid handshake");
+        disconnectStream();
+        return false;
+      }
     } else {
+        ESP_LOGI(TAG, "Client not connected");
         return false;
     }
 }
@@ -53,6 +50,8 @@ bool WebSocketClient::analyzeRequest() {
 
     randomSeed(analogRead(0));
 
+    ESP_LOGI(TAG, "analyzeRequest");
+
     for (int i=0; i<16; ++i) {
         keyStart[i] = (char)random(1, 256);
     }
@@ -63,11 +62,28 @@ bool WebSocketClient::analyzeRequest() {
         key[i] = b64Key[i];
     }
 
-#ifdef DEBUGGING
-    Serial.println(F("Sending websocket upgrade headers"));
-#endif    
+    ESP_LOGI(TAG, "Sending websocket upgrade headers");
+    ESP_LOGI(TAG, "socket_client#connected=%d", socket_client->connected());
+
+    ESP_LOGI(TAG, "Sending websocket upgrade headers #2");
+    if (socket_client->connected())
+    {
+      ESP_LOGI(TAG, "socket_client#connected=true");
+    }
+    else
+    {
+      ESP_LOGI(TAG, "socket_client#connected=false");
+    }
+    ESP_LOGI(TAG, "socket_client#connected=%u", socket_client->connected());
+
+    ESP_LOGI(TAG, "connecting to host=%s", host);
+    ESP_LOGI(TAG, "connecting to path=%s", host);
+    ESP_LOGI(TAG, "connecting to protocol=%s", protocol);
 
     socket_client->print(F("GET "));
+    ESP_LOGI(TAG, "After first print");
+
+
     socket_client->print(path);
     socket_client->print(F(" HTTP/1.1\r\n"));
     socket_client->print(F("Upgrade: websocket\r\n"));
@@ -75,18 +91,19 @@ bool WebSocketClient::analyzeRequest() {
     socket_client->print(F("Host: "));
     socket_client->print(host);
     socket_client->print(CRLF); 
+    ESP_LOGI(TAG, "print #2");
+
     socket_client->print(F("Sec-WebSocket-Key: "));
     socket_client->print(key);
     socket_client->print(CRLF);
     socket_client->print(F("Sec-WebSocket-Protocol: "));
     socket_client->print(protocol);
     socket_client->print(CRLF);
+    ESP_LOGI(TAG, "print #3");
     socket_client->print(F("Sec-WebSocket-Version: 13\r\n"));
     socket_client->print(CRLF);
 
-#ifdef DEBUGGING
-    Serial.println(F("Analyzing response headers"));
-#endif    
+    ESP_LOGI(TAG, "Analyzing response headers");
 
     while (socket_client->connected() && !socket_client->available()) {
         delay(100);
@@ -99,9 +116,8 @@ bool WebSocketClient::analyzeRequest() {
         temp += (char)bite;
 
         if ((char)bite == '\n') {
-#ifdef DEBUGGING
-            Serial.print("Got Header: " + temp);
-#endif
+            ESP_LOGI(TAG, "Got Header: %s", temp.c_str());
+
             if (!foundupgrade && temp.startsWith("Upgrade: websocket")) {
                 foundupgrade = true;
             } else if (temp.startsWith("Sec-WebSocket-Accept: ")) {
@@ -150,6 +166,8 @@ bool WebSocketClient::handleStream(String& data, uint8_t *opcode) {
     unsigned int i;
     bool hasMask = false;
 
+    ESP_LOGI(TAG, "Start handleStream");
+
     if (!socket_client->connected() || !socket_client->available())
     {
         return false;
@@ -186,9 +204,7 @@ bool WebSocketClient::handleStream(String& data, uint8_t *opcode) {
         }   
 
     } else if (length == WS_SIZE64) {
-#ifdef DEBUGGING
-        Serial.println(F("No support for over 16 bit sized messages"));
-#endif
+        ESP_LOGW(TAG, "No support for over 16 bit sized messages");
         return false;
     }
 
@@ -243,9 +259,8 @@ bool WebSocketClient::handleStream(String& data, uint8_t *opcode) {
 }
 
 void WebSocketClient::disconnectStream() {
-#ifdef DEBUGGING
-    Serial.println(F("Terminating socket"));
-#endif
+    ESP_LOGI(TAG, "Terminating socket");
+
     // Should send 0x8700 to server to tell it I'm quitting here.
     socket_client->write((uint8_t) 0x87);
     socket_client->write((uint8_t) 0x00);
@@ -256,30 +271,30 @@ void WebSocketClient::disconnectStream() {
 }
 
 bool WebSocketClient::getData(String& data, uint8_t *opcode) {
+    ESP_LOGI(TAG, "#getData");
     return handleStream(data, opcode);
 }    
 
 void WebSocketClient::sendData(const char *str, uint8_t opcode) {
-#ifdef DEBUGGING
-    Serial.print(F("Sending data: "));
-    Serial.println(str);
-#endif
+  ESP_LOGI(TAG, "Sending data - 1");
+    ESP_LOGI(TAG, "Sending data: %s", str);
     if (socket_client->connected()) {
         sendEncodedData(str, opcode);       
     }
 }
 
 void WebSocketClient::sendData(String str, uint8_t opcode) {
-#ifdef DEBUGGING
-    Serial.print(F("Sending data: "));
-    Serial.println(str);
-#endif
+    ESP_LOGI(TAG, "Sending data - 2");
+    ESP_LOGI(TAG, "Sending data: %s", str.c_str());
+    ESP_LOGI(TAG, "Sending data - 3");
+    ESP_LOGI(TAG, "Sending data client#connected=%d", socket_client->connected());
     if (socket_client->connected()) {
         sendEncodedData(str, opcode);
     }
 }
 
 int WebSocketClient::timedRead() {
+  ESP_LOGI(TAG, "Starting timedRead");
   while (!socket_client->available()) {
     delay(20);  
   }
@@ -290,6 +305,9 @@ int WebSocketClient::timedRead() {
 void WebSocketClient::sendEncodedData(char *str, uint8_t opcode) {
     uint8_t mask[4];
     int size = strlen(str);
+
+    ESP_LOGI(TAG, "sendEncodedData -1");
+    ESP_LOGI(TAG, "sendEncodedData '%s'", str);
 
     // Opcode; final fragment
     socket_client->write(opcode | WS_FIN);
@@ -319,10 +337,13 @@ void WebSocketClient::sendEncodedData(char *str, uint8_t opcode) {
 }
 
 void WebSocketClient::sendEncodedData(String str, uint8_t opcode) {
+    ESP_LOGI(TAG, "sendEncodedData - 2");
     int size = str.length() + 1;
     char cstr[size];
 
+    ESP_LOGI(TAG, "sendEncodedData - 3");
     str.toCharArray(cstr, size);
+    ESP_LOGI(TAG, "sendEncodedData - 4");
 
     sendEncodedData(cstr, opcode);
 }
